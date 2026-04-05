@@ -11,8 +11,7 @@ A fast, interactive CLI for managing git worktrees. Create, switch, list, and re
 ### Homebrew (macOS / Linux)
 
 ```bash
-brew tap sushidev-team/tap
-brew install wt
+brew install sushidev-team/tap/wt
 ```
 
 ### Go
