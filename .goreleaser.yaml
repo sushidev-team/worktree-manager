@@ -1,0 +1,48 @@
+version: 2
+
+builds:
+  - binary: wt
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w -X main.version={{.Version}} -X main.commit={{.Commit}}
+
+archives:
+  - format: tar.gz
+    name_template: >-
+      {{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}
+    format_overrides:
+      - goos: windows
+        format: zip
+
+brews:
+  - repository:
+      owner: sushidev-team
+      name: homebrew-tap
+      token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
+    name: wt
+    homepage: "https://github.com/sushidev-team/worktree-manager"
+    description: "A convenient CLI for managing git worktrees"
+    license: "MIT"
+    install: |
+      bin.install "wt"
+    test: |
+      system "#{bin}/wt", "--help"
+
+checksum:
+  name_template: checksums.txt
+
+changelog:
+  use: github-native
+
+release:
+  github:
+    owner: sushidev-team
+    name: worktree-manager
