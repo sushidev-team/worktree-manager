@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"os"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/key"
@@ -326,10 +327,6 @@ func (m InteractiveModel) refreshList() (tea.Model, tea.Cmd) {
 
 func (m InteractiveModel) View() string {
 	if m.quitting {
-		if m.switchTo != "" {
-			// Print only the path for shell function to cd
-			return m.switchTo
-		}
 		return ""
 	}
 
@@ -393,7 +390,7 @@ func RunInteractive() (string, error) {
 	}
 
 	model := NewInteractive(worktrees)
-	p := tea.NewProgram(model, tea.WithAltScreen())
+	p := tea.NewProgram(model, tea.WithAltScreen(), tea.WithOutput(os.Stderr))
 	result, err := p.Run()
 	if err != nil {
 		return "", err

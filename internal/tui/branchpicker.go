@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"os"
 
 	"github.com/charmbracelet/bubbles/list"
 	tea "github.com/charmbracelet/bubbletea"
@@ -117,7 +118,7 @@ func PickBranch() (string, error) {
 	}
 
 	model := NewBranchPicker(branches)
-	p := tea.NewProgram(model, tea.WithAltScreen())
+	p := tea.NewProgram(model, tea.WithAltScreen(), tea.WithOutput(os.Stderr))
 	result, err := p.Run()
 	if err != nil {
 		return "", err
