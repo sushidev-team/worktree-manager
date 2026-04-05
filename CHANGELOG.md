@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.0.2](https://github.com/sushidev-team/worktree-manager/compare/v1.0.1...v1.0.2) (2026-04-05)
+
+
+### Bug Fixes
+
+* goreleaser linux ([284318b](https://github.com/sushidev-team/worktree-manager/commit/284318bf29c2913d05b722c2be20b85002b10912))
+* updated readme ([c59decf](https://github.com/sushidev-team/worktree-manager/commit/c59decfd1d2a70ccd6f26ac639189ba8c4ae9308))
+
 ## [1.0.1](https://github.com/sushidev-team/worktree-manager/compare/v1.0.0...v1.0.1) (2026-04-05)
 
 
