@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.0.3](https://github.com/sushidev-team/worktree-manager/compare/v1.0.2...v1.0.3) (2026-04-05)
+
+
+### Bug Fixes
+
+* stdout fix for linux ([a38b38f](https://github.com/sushidev-team/worktree-manager/commit/a38b38f7fa045720f8a73725a3953aa3d159e707))
+* upgrade command ([f8aa62b](https://github.com/sushidev-team/worktree-manager/commit/f8aa62b5db7d7594699570c2ca3775aa9c4f3b96))
+
 ## [1.0.2](https://github.com/sushidev-team/worktree-manager/compare/v1.0.1...v1.0.2) (2026-04-05)
 
 
