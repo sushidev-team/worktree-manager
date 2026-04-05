@@ -36,8 +36,6 @@ brews:
       bin.install "wt"
     test: |
       system "#{bin}/wt", "--help"
-    custom_block: |
-      bottle :unneeded
 
 checksum:
   name_template: checksums.txt

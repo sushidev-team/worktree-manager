@@ -25,9 +25,12 @@ var rootCmd = &cobra.Command{
 	SilenceErrors: true,
 }
 
+var version = "dev"
+
 // SetVersion sets the version string shown by --version.
-func SetVersion(version, commit string) {
-	rootCmd.Version = fmt.Sprintf("%s (%s)", version, commit)
+func SetVersion(v, commit string) {
+	version = v
+	rootCmd.Version = fmt.Sprintf("%s (%s)", v, commit)
 }
 
 func Execute() error {
@@ -40,5 +43,6 @@ func init() {
 	rootCmd.AddCommand(listCmd)
 	rootCmd.AddCommand(removeCmd)
 	rootCmd.AddCommand(initShellCmd)
+	rootCmd.AddCommand(upgradeCmd)
 }
 

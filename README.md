@@ -8,7 +8,19 @@ A fast, interactive CLI for managing git worktrees. Create, switch, list, and re
 
 ## Install
 
-### Homebrew (macOS / Linux)
+### Quick Install (macOS / Linux)
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/sushidev-team/worktree-manager/main/install.sh | sh
+```
+
+Or specify a custom install directory:
+
+```bash
+INSTALL_DIR=~/.local/bin curl -fsSL https://raw.githubusercontent.com/sushidev-team/worktree-manager/main/install.sh | sh
+```
+
+### Homebrew (macOS)
 
 ```bash
 brew install sushidev-team/tap/wt
@@ -107,6 +119,7 @@ wt remove my-feature --force
 | `wt list` | List all worktrees |
 | `wt remove <name> [-f]` | Remove a worktree |
 | `wt init-shell` | Print shell wrapper function |
+| `wt upgrade` | Self-update to the latest release |
 
 ## How It Works
 
