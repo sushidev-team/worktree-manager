@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.1](https://github.com/sushidev-team/worktree-manager/compare/v1.1.0...v1.1.1) (2026-07-06)
+
+
+### Bug Fixes
+
+* updated to sushi release action ([be81a36](https://github.com/sushidev-team/worktree-manager/commit/be81a36818adb905c069a2e1005ec7112ff8b561))
+
 ## [1.1.0](https://github.com/sushidev-team/worktree-manager/compare/v1.0.3...v1.1.0) (2026-07-06)
 
 
