@@ -42,7 +42,7 @@ func init() {
 	rootCmd.AddCommand(useCmd)
 	rootCmd.AddCommand(listCmd)
 	rootCmd.AddCommand(removeCmd)
+	rootCmd.AddCommand(syncIgnoredCmd)
 	rootCmd.AddCommand(initShellCmd)
 	rootCmd.AddCommand(upgradeCmd)
 }
-

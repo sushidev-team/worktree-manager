@@ -2,13 +2,17 @@ package cmd
 
 import (
 	"fmt"
+	"os"
 
 	"github.com/spf13/cobra"
 	"github.com/sushi/worktree-manager/internal/git"
 	"github.com/sushi/worktree-manager/internal/tui"
 )
 
-var addBase string
+var (
+	addBase string
+	addSync bool
+)
 
 var addCmd = &cobra.Command{
 	Use:   "add <name>",
@@ -33,6 +37,19 @@ var addCmd = &cobra.Command{
 			return err
 		}
 
+		if addSync {
+			src, err := git.MainWorktreePath()
+			if err != nil {
+				return err
+			}
+			fmt.Fprint(os.Stderr, "Copying gitignored files...\n")
+			n, err := git.SyncIgnoredFiles(src, path)
+			if err != nil {
+				return err
+			}
+			fmt.Fprintf(os.Stderr, "Copied %d ignored %s.\n", n, plural(n, "entry", "entries"))
+		}
+
 		fmt.Print(path)
 		return nil
 	},
@@ -40,4 +57,5 @@ var addCmd = &cobra.Command{
 
 func init() {
 	addCmd.Flags().StringVarP(&addBase, "base", "b", "", "Base branch (interactive picker if omitted)")
+	addCmd.Flags().BoolVarP(&addSync, "sync-ignored", "s", false, "Copy gitignored files from the main worktree into the new worktree")
 }

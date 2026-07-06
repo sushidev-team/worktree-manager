@@ -20,6 +20,7 @@ const (
 	modeAdd
 	modeConfirmDelete
 	modeBranchPick
+	modeSyncPrompt
 )
 
 // WorktreeItem implements list.Item for the worktree list.
@@ -55,17 +56,18 @@ func (w WorktreeItem) FilterValue() string {
 
 // InteractiveModel is the main TUI model for the interactive worktree manager.
 type InteractiveModel struct {
-	list       list.Model
-	mode       mode
-	addInput   textinput.Model
-	branchList list.Model
-	selected   *git.Worktree
-	message    string
-	err        error
-	width      int
-	height     int
-	quitting   bool
-	switchTo   string // path to switch to after quitting
+	list          list.Model
+	mode          mode
+	addInput      textinput.Model
+	branchList    list.Model
+	pendingBranch string // base branch chosen, awaiting sync confirmation
+	selected      *git.Worktree
+	message       string
+	err           error
+	width         int
+	height        int
+	quitting      bool
+	switchTo      string // path to switch to after quitting
 }
 
 // NewInteractive creates the main interactive TUI model.
@@ -145,6 +147,8 @@ func (m InteractiveModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.handleDeleteKey(msg)
 	case modeBranchPick:
 		return m.handleBranchPickKey(msg)
+	case modeSyncPrompt:
+		return m.handleSyncPromptKey(msg)
 	}
 	return m, nil
 }
@@ -274,16 +278,10 @@ func (m InteractiveModel) handleBranchPickKey(msg tea.KeyMsg) (tea.Model, tea.Cm
 	switch msg.String() {
 	case "enter":
 		if item, ok := m.branchList.SelectedItem().(BranchItem); ok {
-			name := strings.TrimSpace(m.addInput.Value())
-			path, err := git.AddWorktree(name, item.branch.Name)
-			if err != nil {
-				m.err = err
-				m.mode = modeList
-				return m, nil
-			}
-			m.switchTo = path
-			m.quitting = true
-			return m, tea.Quit
+			m.pendingBranch = item.branch.Name
+			m.mode = modeSyncPrompt
+			m.message = ""
+			return m, nil
 		}
 	case "esc":
 		m.mode = modeAdd
@@ -293,6 +291,45 @@ func (m InteractiveModel) handleBranchPickKey(msg tea.KeyMsg) (tea.Model, tea.Cm
 	var cmd tea.Cmd
 	m.branchList, cmd = m.branchList.Update(msg)
 	return m, cmd
+}
+
+// handleSyncPromptKey asks whether to copy gitignored files into the new
+// worktree, then creates it either way.
+func (m InteractiveModel) handleSyncPromptKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "y", "Y":
+		return m.createWorktree(true)
+	case "n", "N", "enter":
+		return m.createWorktree(false)
+	case "esc":
+		m.mode = modeBranchPick
+		return m, nil
+	}
+	return m, nil
+}
+
+// createWorktree creates the pending worktree, optionally copying gitignored
+// files, then quits the TUI so the shell wrapper can cd into it.
+func (m InteractiveModel) createWorktree(syncIgnored bool) (tea.Model, tea.Cmd) {
+	name := strings.TrimSpace(m.addInput.Value())
+	path, err := git.AddWorktree(name, m.pendingBranch)
+	if err != nil {
+		m.err = err
+		m.mode = modeList
+		return m, nil
+	}
+	if syncIgnored {
+		if src, err := git.MainWorktreePath(); err == nil {
+			if _, err := git.SyncIgnoredFiles(src, path); err != nil {
+				m.err = err
+			}
+		} else {
+			m.err = err
+		}
+	}
+	m.switchTo = path
+	m.quitting = true
+	return m, tea.Quit
 }
 
 func (m InteractiveModel) updateCurrentMode(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -356,6 +393,15 @@ func (m InteractiveModel) View() string {
 		b.WriteString(HelpStyle.Render("  y: yes · n: no"))
 	case modeBranchPick:
 		b.WriteString(m.branchList.View())
+	case modeSyncPrompt:
+		name := strings.TrimSpace(m.addInput.Value())
+		summary := fmt.Sprintf("  Create '%s' from '%s'.\n\n", name, m.pendingBranch)
+		b.WriteString("\n")
+		b.WriteString(TitleStyle.Render("New Worktree"))
+		b.WriteString("\n\n")
+		b.WriteString(summary)
+		b.WriteString("  Copy gitignored files (.env, config, etc.) from the main worktree?\n\n")
+		b.WriteString(HelpStyle.Render("  y: copy · n: skip · esc: back"))
 	}
 
 	if m.message != "" {

@@ -70,9 +70,28 @@ wt add my-feature
 
 # Specify base branch directly
 wt add my-feature --base main
+
+# Also copy gitignored files (.env, config, node_modules, …) into the new worktree
+wt add my-feature --base main --sync-ignored
 ```
 
 Creates a new worktree as a sibling directory and switches to it. For a repo at `~/code/myrepo`, the worktree is created at `~/code/myrepo--my-feature`.
+
+In the interactive TUI, the add flow asks whether to copy gitignored files before creating the worktree.
+
+### Copy Gitignored Files
+
+Git worktrees only check out tracked files, so a fresh worktree is missing anything git ignores — `.env` secrets, local config, `node_modules`, build output. `sync-ignored` copies those from the main worktree so the new one is ready to run:
+
+```bash
+# Copy gitignored files from the main worktree into the current one
+wt sync-ignored
+
+# Or target another worktree by name (fuzzy match)
+wt sync-ignored my-feature
+```
+
+`sync` works as an alias: `wt sync`. Existing files in the target are overwritten.
 
 ### Switch to a Worktree
 
@@ -114,10 +133,11 @@ wt remove my-feature --force
 | Command | Description |
 |---|---|
 | `wt` | Interactive TUI — browse, switch, add, delete |
-| `wt add <name> [-b branch]` | Create a new worktree |
+| `wt add <name> [-b branch] [-s]` | Create a new worktree (`-s` copies gitignored files) |
 | `wt use <name>` | Switch to a worktree (fuzzy match) |
 | `wt list` | List all worktrees |
 | `wt remove <name> [-f]` | Remove a worktree |
+| `wt sync-ignored [name]` | Copy gitignored files from the main worktree |
 | `wt init-shell` | Print shell wrapper function |
 | `wt upgrade` | Self-update to the latest release |
 
