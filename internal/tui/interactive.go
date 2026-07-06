@@ -5,8 +5,8 @@ import (
 	"os"
 	"strings"
 
-	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/list"
+	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -23,99 +23,157 @@ const (
 	modeSyncPrompt
 )
 
+// chromeHeight is the number of rows the header, footer and their spacers
+// consume; the list/body gets the rest.
+const chromeHeight = 4
+
+// --- async messages ---------------------------------------------------------
+
+type worktreesMsg struct {
+	list []git.Worktree
+	err  error
+}
+type branchesMsg struct {
+	name string // worktree name the branch is being picked for
+	list []git.Branch
+	err  error
+}
+type createdMsg struct {
+	path string
+	err  error
+}
+type removedMsg struct {
+	name string
+	err  error
+}
+
+func loadWorktreesCmd() tea.Msg {
+	wts, err := git.ListWorktrees()
+	return worktreesMsg{list: wts, err: err}
+}
+
+func loadBranchesCmd(name string) tea.Cmd {
+	return func() tea.Msg {
+		bs, err := git.ListBranches()
+		return branchesMsg{name: name, list: bs, err: err}
+	}
+}
+
+func createWorktreeCmd(name, base string, syncIgnored bool) tea.Cmd {
+	return func() tea.Msg {
+		path, err := git.AddWorktree(name, base)
+		if err == nil && syncIgnored {
+			if src, e := git.MainWorktreePath(); e == nil {
+				_, err = git.SyncIgnoredFiles(src, path)
+			} else {
+				err = e
+			}
+		}
+		return createdMsg{path: path, err: err}
+	}
+}
+
+func removeWorktreeCmd(wt git.Worktree) tea.Cmd {
+	return func() tea.Msg {
+		var err error
+		if wt.IsDirty {
+			err = git.ForceRemoveWorktree(wt.Path)
+		} else {
+			err = git.RemoveWorktree(wt.Path)
+		}
+		return removedMsg{name: wt.Name, err: err}
+	}
+}
+
+// --- list items -------------------------------------------------------------
+
 // WorktreeItem implements list.Item for the worktree list.
 type WorktreeItem struct {
 	wt git.Worktree
 }
 
-func (w WorktreeItem) Title() string {
-	name := w.wt.Name
-	if w.wt.IsCurrent {
-		name = "● " + name
-	}
-	return name
-}
+func (w WorktreeItem) Title() string       { return w.wt.Name }
+func (w WorktreeItem) Description() string { return w.wt.Branch }
+func (w WorktreeItem) FilterValue() string { return w.wt.Name + " " + w.wt.Branch }
 
-func (w WorktreeItem) Description() string {
-	parts := []string{}
-	if w.wt.Branch != "" {
-		parts = append(parts, w.wt.Branch)
-	}
-	if w.wt.Head != "" {
-		parts = append(parts, w.wt.Head)
-	}
-	if w.wt.IsDirty {
-		parts = append(parts, "✱ dirty")
-	}
-	return strings.Join(parts, " · ")
-}
-
-func (w WorktreeItem) FilterValue() string {
-	return w.wt.Name + " " + w.wt.Branch
-}
+// --- model ------------------------------------------------------------------
 
 // InteractiveModel is the main TUI model for the interactive worktree manager.
 type InteractiveModel struct {
 	list          list.Model
+	spinner       spinner.Model
 	mode          mode
 	addInput      textinput.Model
 	branchList    list.Model
+	pendingName   string // worktree name awaiting branch + sync choice
 	pendingBranch string // base branch chosen, awaiting sync confirmation
 	selected      *git.Worktree
 	message       string
 	err           error
+	loading       bool
+	loadingMsg    string
 	width         int
 	height        int
 	quitting      bool
 	switchTo      string // path to switch to after quitting
 }
 
-// NewInteractive creates the main interactive TUI model.
+// NewInteractive creates the main interactive TUI model with a pre-loaded
+// worktree list, so the list is visible and interactive on the first frame.
+// Mutations (add/remove) load asynchronously with a spinner (see startLoading).
 func NewInteractive(worktrees []git.Worktree) InteractiveModel {
 	items := make([]list.Item, len(worktrees))
 	for i, wt := range worktrees {
 		items[i] = WorktreeItem{wt: wt}
 	}
 
-	delegate := list.NewDefaultDelegate()
-	delegate.Styles.SelectedTitle = delegate.Styles.SelectedTitle.
-		Foreground(Purple).
-		BorderLeftForeground(Purple)
-	delegate.Styles.SelectedDesc = delegate.Styles.SelectedDesc.
-		Foreground(Cyan).
-		BorderLeftForeground(Purple)
-	delegate.Styles.NormalTitle = delegate.Styles.NormalTitle.
-		Foreground(White)
-	delegate.Styles.NormalDesc = delegate.Styles.NormalDesc.
-		Foreground(Gray)
-
-	l := list.New(items, delegate, 70, 20)
-	l.Title = "Git Worktrees"
-	l.Styles.Title = TitleStyle
+	l := list.New(items, worktreeDelegate{}, 70, 20)
+	l.SetShowTitle(false)
+	l.SetShowStatusBar(false)
+	l.SetShowHelp(false)
 	l.SetFilteringEnabled(true)
-	l.SetShowStatusBar(true)
-	l.SetShowHelp(false) // We'll show our own help
-	l.AdditionalShortHelpKeys = func() []key.Binding {
-		return []key.Binding{
-			key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "switch")),
-			key.NewBinding(key.WithKeys("a"), key.WithHelp("a", "add")),
-			key.NewBinding(key.WithKeys("d"), key.WithHelp("d", "delete")),
-		}
-	}
+	l.FilterInput.PromptStyle = BranchStyle
+	l.FilterInput.Cursor.Style = BranchStyle
+
+	sp := spinner.New()
+	sp.Spinner = spinner.Dot
+	sp.Style = SpinnerStyle
 
 	ti := textinput.New()
 	ti.Placeholder = "worktree-name"
 	ti.CharLimit = 100
 	ti.Width = 40
+	ti.Prompt = ""
 
 	return InteractiveModel{
-		list:     l,
-		addInput: ti,
+		list:       l,
+		branchList: newBranchList(nil, 70, 20), // valid empty model; replaced on add
+		spinner:    sp,
+		addInput:   ti,
 	}
 }
 
 func (m InteractiveModel) Init() tea.Cmd {
-	return nil
+	return textinput.Blink
+}
+
+// startLoading enters the loading state with a message and kicks off cmd,
+// keeping the spinner animating.
+func (m InteractiveModel) startLoading(msg string, cmd tea.Cmd) (tea.Model, tea.Cmd) {
+	m.loading = true
+	m.loadingMsg = msg
+	m.message = ""
+	m.err = nil
+	return m, tea.Batch(m.spinner.Tick, cmd)
+}
+
+func (m *InteractiveModel) resize() {
+	h := m.height - chromeHeight
+	if m.width <= 0 || h <= 0 {
+		return
+	}
+	m.list.SetSize(m.width, h)
+	m.branchList.SetSize(m.width, h)
 }
 
 func (m InteractiveModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -123,13 +181,65 @@ func (m InteractiveModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
-		m.list.SetWidth(msg.Width)
-		m.list.SetHeight(msg.Height - 4)
-		if m.mode == modeBranchPick {
-			m.branchList.SetWidth(msg.Width)
-			m.branchList.SetHeight(msg.Height - 6)
-		}
+		m.resize()
 		return m, nil
+
+	case spinner.TickMsg:
+		if !m.loading {
+			return m, nil
+		}
+		var cmd tea.Cmd
+		m.spinner, cmd = m.spinner.Update(msg)
+		return m, cmd
+
+	case worktreesMsg:
+		m.loading = false
+		if msg.err != nil {
+			m.err = msg.err
+			return m, nil
+		}
+		items := make([]list.Item, len(msg.list))
+		for i, wt := range msg.list {
+			items[i] = WorktreeItem{wt: wt}
+		}
+		m.list.SetItems(items)
+		m.mode = modeList
+		m.selected = nil
+		return m, nil
+
+	case branchesMsg:
+		m.loading = false
+		if msg.err != nil {
+			m.err = msg.err
+			m.mode = modeList
+			return m, nil
+		}
+		m.branchList = newBranchList(msg.list, m.width, m.height-chromeHeight)
+		m.mode = modeBranchPick
+		return m, nil
+
+	case createdMsg:
+		if msg.err != nil {
+			m.loading = false
+			m.err = msg.err
+			m.mode = modeList
+			return m, nil
+		}
+		m.switchTo = msg.path
+		m.quitting = true
+		return m, tea.Quit
+
+	case removedMsg:
+		if msg.err != nil {
+			m.loading = false
+			m.err = msg.err
+			m.mode = modeList
+			return m, nil
+		}
+		m.message = fmt.Sprintf("Removed worktree '%s'", msg.name)
+		m.loadingMsg = "Refreshing…"
+		return m, loadWorktreesCmd
+
 	case tea.KeyMsg:
 		return m.handleKey(msg)
 	}
@@ -138,6 +248,15 @@ func (m InteractiveModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m InteractiveModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	// While a git operation runs, only allow quitting.
+	if m.loading {
+		if msg.String() == "ctrl+c" {
+			m.quitting = true
+			return m, tea.Quit
+		}
+		return m, nil
+	}
+
 	switch m.mode {
 	case modeList:
 		return m.handleListKey(msg)
@@ -154,7 +273,7 @@ func (m InteractiveModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m InteractiveModel) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	// Don't intercept keys when filtering
+	// Don't intercept keys while filtering.
 	if m.list.FilterState() == list.Filtering {
 		var cmd tea.Cmd
 		m.list, cmd = m.list.Update(msg)
@@ -177,6 +296,7 @@ func (m InteractiveModel) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.addInput.Reset()
 		m.addInput.Focus()
 		m.message = ""
+		m.err = nil
 		return m, m.addInput.Cursor.BlinkCmd()
 	case "d":
 		if item, ok := m.list.SelectedItem().(WorktreeItem); ok {
@@ -187,7 +307,9 @@ func (m InteractiveModel) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.selected = &item.wt
 			m.mode = modeConfirmDelete
 			m.message = ""
+			m.err = nil
 		}
+		return m, nil
 	case "q", "ctrl+c":
 		m.quitting = true
 		return m, tea.Quit
@@ -206,29 +328,8 @@ func (m InteractiveModel) handleAddKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.mode = modeList
 			return m, nil
 		}
-		// Move to branch picking
-		branches, err := git.ListBranches()
-		if err != nil {
-			m.err = err
-			m.mode = modeList
-			return m, nil
-		}
-		items := make([]list.Item, len(branches))
-		for i, b := range branches {
-			items[i] = BranchItem{branch: b}
-		}
-		delegate := list.NewDefaultDelegate()
-		delegate.ShowDescription = false
-		delegate.Styles.SelectedTitle = delegate.Styles.SelectedTitle.
-			Foreground(Purple).
-			BorderLeftForeground(Purple)
-		bl := list.New(items, delegate, m.width, m.height-6)
-		bl.Title = fmt.Sprintf("Base branch for '%s'", name)
-		bl.Styles.Title = TitleStyle
-		bl.SetFilteringEnabled(true)
-		m.branchList = bl
-		m.mode = modeBranchPick
-		return m, nil
+		m.pendingName = name
+		return m.startLoading("Loading branches…", loadBranchesCmd(name))
 	case "esc":
 		m.mode = modeList
 		return m, nil
@@ -243,22 +344,11 @@ func (m InteractiveModel) handleDeleteKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "y", "Y":
 		if m.selected != nil {
-			var err error
-			if m.selected.IsDirty {
-				err = git.ForceRemoveWorktree(m.selected.Path)
-			} else {
-				err = git.RemoveWorktree(m.selected.Path)
-			}
-			if err != nil {
-				m.err = err
-			} else {
-				m.message = fmt.Sprintf("Removed worktree '%s'", m.selected.Name)
-				// Refresh the list
-				return m.refreshList()
-			}
+			return m.startLoading(
+				fmt.Sprintf("Removing '%s'…", m.selected.Name),
+				removeWorktreeCmd(*m.selected))
 		}
 		m.mode = modeList
-		m.selected = nil
 		return m, nil
 	case "n", "N", "esc":
 		m.mode = modeList
@@ -298,38 +388,16 @@ func (m InteractiveModel) handleBranchPickKey(msg tea.KeyMsg) (tea.Model, tea.Cm
 func (m InteractiveModel) handleSyncPromptKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "y", "Y":
-		return m.createWorktree(true)
+		return m.startLoading("Creating worktree…",
+			createWorktreeCmd(m.pendingName, m.pendingBranch, true))
 	case "n", "N", "enter":
-		return m.createWorktree(false)
+		return m.startLoading("Creating worktree…",
+			createWorktreeCmd(m.pendingName, m.pendingBranch, false))
 	case "esc":
 		m.mode = modeBranchPick
 		return m, nil
 	}
 	return m, nil
-}
-
-// createWorktree creates the pending worktree, optionally copying gitignored
-// files, then quits the TUI so the shell wrapper can cd into it.
-func (m InteractiveModel) createWorktree(syncIgnored bool) (tea.Model, tea.Cmd) {
-	name := strings.TrimSpace(m.addInput.Value())
-	path, err := git.AddWorktree(name, m.pendingBranch)
-	if err != nil {
-		m.err = err
-		m.mode = modeList
-		return m, nil
-	}
-	if syncIgnored {
-		if src, err := git.MainWorktreePath(); err == nil {
-			if _, err := git.SyncIgnoredFiles(src, path); err != nil {
-				m.err = err
-			}
-		} else {
-			m.err = err
-		}
-	}
-	m.switchTo = path
-	m.quitting = true
-	return m, tea.Quit
 }
 
 func (m InteractiveModel) updateCurrentMode(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -345,102 +413,136 @@ func (m InteractiveModel) updateCurrentMode(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
-func (m InteractiveModel) refreshList() (tea.Model, tea.Cmd) {
-	worktrees, err := git.ListWorktrees()
-	if err != nil {
-		m.err = err
-		m.mode = modeList
-		return m, nil
-	}
-	items := make([]list.Item, len(worktrees))
-	for i, wt := range worktrees {
-		items[i] = WorktreeItem{wt: wt}
-	}
-	m.list.SetItems(items)
-	m.mode = modeList
-	m.selected = nil
-	return m, nil
-}
+// --- view -------------------------------------------------------------------
 
 func (m InteractiveModel) View() string {
-	if m.quitting {
+	if m.quitting || m.height == 0 {
 		return ""
 	}
 
-	var b strings.Builder
+	header := m.headerView()
+	footer := m.footerView()
+	bodyH := m.height - chromeHeight
+
+	body := m.bodyView(bodyH)
+
+	// Status line sits between body and footer, occupying the lower spacer row
+	// so the overall height stays constant.
+	status := ""
+	switch {
+	case m.err != nil:
+		status = ErrorStyle.Render("  " + m.err.Error())
+	case m.message != "":
+		status = WarnStyle.Render("  " + m.message)
+	}
+
+	return lipgloss.JoinVertical(lipgloss.Left, header, "", body, status, footer)
+}
+
+func (m InteractiveModel) headerView() string {
+	title := "Git Worktrees"
+	switch m.mode {
+	case modeAdd:
+		title = "New Worktree"
+	case modeBranchPick:
+		title = fmt.Sprintf("Base branch for '%s'", m.pendingName)
+	case modeSyncPrompt:
+		title = "New Worktree"
+	case modeConfirmDelete:
+		title = "Delete Worktree"
+	}
+	bar := title
+	if m.mode == modeList && !m.loading {
+		bar += "  " + CountStyle.Render(fmt.Sprintf("(%d)", len(m.list.Items())))
+	}
+	return HeaderBarStyle.Width(m.width).Render(bar)
+}
+
+func (m InteractiveModel) footerView() string {
+	var hints []string
+	switch {
+	case m.loading:
+		hints = []string{hint("ctrl+c", "quit")}
+	case m.mode == modeList && m.list.FilterState() == list.Filtering:
+		hints = []string{hint("enter", "apply"), hint("esc", "clear")}
+	case m.mode == modeList:
+		hints = []string{hint("enter", "switch"), hint("a", "add"), hint("d", "delete"), hint("/", "filter"), hint("q", "quit")}
+	case m.mode == modeAdd:
+		hints = []string{hint("enter", "next"), hint("esc", "cancel")}
+	case m.mode == modeBranchPick:
+		hints = []string{hint("enter", "select"), hint("/", "filter"), hint("esc", "back")}
+	case m.mode == modeSyncPrompt:
+		hints = []string{hint("y", "copy"), hint("n", "skip"), hint("esc", "back")}
+	case m.mode == modeConfirmDelete:
+		hints = []string{hint("y", "delete"), hint("n", "cancel")}
+	}
+	return "  " + strings.Join(hints, HelpStyle.Render("  ·  "))
+}
+
+func (m InteractiveModel) bodyView(h int) string {
+	if m.loading {
+		return center(m.width, h, m.spinner.View()+" "+HelpStyle.Render(m.loadingMsg))
+	}
 
 	switch m.mode {
-	case modeList:
-		b.WriteString(m.list.View())
-	case modeAdd:
-		b.WriteString("\n")
-		b.WriteString(TitleStyle.Render("New Worktree"))
-		b.WriteString("\n\n")
-		b.WriteString("  Name: ")
-		b.WriteString(m.addInput.View())
-		b.WriteString("\n\n")
-		b.WriteString(HelpStyle.Render("  enter: confirm · esc: cancel"))
-	case modeConfirmDelete:
-		b.WriteString("\n")
-		b.WriteString(m.list.View())
-		b.WriteString("\n")
-		warn := fmt.Sprintf("  Delete worktree '%s'?", m.selected.Name)
-		if m.selected.IsDirty {
-			warn += " (has uncommitted changes!)"
-		}
-		b.WriteString(ErrorStyle.Render(warn))
-		b.WriteString("\n")
-		b.WriteString(HelpStyle.Render("  y: yes · n: no"))
 	case modeBranchPick:
-		b.WriteString(m.branchList.View())
+		return place(m.width, h, m.branchList.View())
+	case modeAdd:
+		box := ModalStyle.Render(lipgloss.JoinVertical(lipgloss.Left,
+			ModalTitle.Render("Name the new worktree"),
+			BranchStyle.Render("› ")+m.addInput.View(),
+		))
+		return center(m.width, h, box)
 	case modeSyncPrompt:
-		name := strings.TrimSpace(m.addInput.Value())
-		summary := fmt.Sprintf("  Create '%s' from '%s'.\n\n", name, m.pendingBranch)
-		b.WriteString("\n")
-		b.WriteString(TitleStyle.Render("New Worktree"))
-		b.WriteString("\n\n")
-		b.WriteString(summary)
-		b.WriteString("  Copy gitignored files (.env, config, etc.) from the main worktree?\n\n")
-		b.WriteString(HelpStyle.Render("  y: copy · n: skip · esc: back"))
+		box := ModalStyle.Render(lipgloss.JoinVertical(lipgloss.Left,
+			ModalTitle.Render(fmt.Sprintf("Create '%s' from '%s'", m.pendingName, m.pendingBranch)),
+			"Copy gitignored files (.env, config, …)",
+			"from the main worktree?",
+		))
+		return center(m.width, h, box)
+	case modeConfirmDelete:
+		warn := fmt.Sprintf("Delete worktree '%s'?", m.selected.Name)
+		lines := []string{ModalTitle.Render(warn)}
+		if m.selected.IsDirty {
+			lines = append(lines, WarnStyle.Render(fmt.Sprintf("✱ %d uncommitted change(s) will be lost.", m.selected.DirtyCount)))
+		}
+		box := ModalStyle.BorderForeground(Red).Render(lipgloss.JoinVertical(lipgloss.Left, lines...))
+		return center(m.width, h, box)
+	default:
+		return place(m.width, h, m.list.View())
 	}
-
-	if m.message != "" {
-		b.WriteString("\n")
-		b.WriteString(lipgloss.NewStyle().Foreground(Yellow).Padding(0, 2).Render(m.message))
-	}
-	if m.err != nil {
-		b.WriteString("\n")
-		b.WriteString(ErrorStyle.Padding(0, 2).Render(m.err.Error()))
-	}
-
-	// Help bar for list mode
-	if m.mode == modeList {
-		b.WriteString("\n")
-		b.WriteString(HelpStyle.Padding(0, 2).Render(
-			"enter: switch · a: add · d: delete · /: filter · q: quit"))
-	}
-
-	return b.String()
 }
 
 // SwitchTo returns the path to switch to, or empty string.
-func (m InteractiveModel) SwitchTo() string {
-	return m.switchTo
-}
+func (m InteractiveModel) SwitchTo() string { return m.switchTo }
 
 // RunInteractive launches the full interactive TUI.
 func RunInteractive() (string, error) {
+	alignColorToStderr()
 	worktrees, err := git.ListWorktrees()
 	if err != nil {
 		return "", err
 	}
-
-	model := NewInteractive(worktrees)
-	p := tea.NewProgram(model, tea.WithAltScreen(), tea.WithOutput(os.Stderr))
+	p := tea.NewProgram(NewInteractive(worktrees), tea.WithAltScreen(), tea.WithOutput(os.Stderr))
 	result, err := p.Run()
 	if err != nil {
 		return "", err
 	}
-
 	return result.(InteractiveModel).SwitchTo(), nil
+}
+
+// --- small view helpers -----------------------------------------------------
+
+func hint(k, desc string) string {
+	return KeyStyle.Render(k) + " " + HelpStyle.Render(desc)
+}
+
+// place pads content to a fixed region, top-left aligned.
+func place(w, h int, content string) string {
+	return lipgloss.Place(w, h, lipgloss.Left, lipgloss.Top, content)
+}
+
+// center pads content to a fixed region, centered.
+func center(w, h int, content string) string {
+	return lipgloss.Place(w, h, lipgloss.Center, lipgloss.Center, content)
 }

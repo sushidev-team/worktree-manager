@@ -6,7 +6,6 @@ import (
 
 	"github.com/charmbracelet/bubbles/list"
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
 	"github.com/sushi/worktree-manager/internal/git"
 )
 
@@ -29,6 +28,30 @@ func (b BranchItem) Title() string {
 func (b BranchItem) Description() string { return "" }
 func (b BranchItem) FilterValue() string { return b.branch.Name }
 
+// newBranchList builds a styled single-line branch list, shared by the
+// standalone picker and the inline add flow.
+func newBranchList(branches []git.Branch, width, height int) list.Model {
+	items := make([]list.Item, len(branches))
+	for i, b := range branches {
+		items[i] = BranchItem{branch: b}
+	}
+
+	if width <= 0 {
+		width = 60
+	}
+	if height <= 0 {
+		height = 15
+	}
+	l := list.New(items, branchDelegate{}, width, height)
+	l.SetShowTitle(false)
+	l.SetShowStatusBar(false)
+	l.SetShowHelp(false)
+	l.SetFilteringEnabled(true)
+	l.FilterInput.PromptStyle = BranchStyle
+	l.FilterInput.Cursor.Style = BranchStyle
+	return l
+}
+
 // BranchPickerModel is a Bubbletea model for picking a base branch.
 type BranchPickerModel struct {
 	list     list.Model
@@ -38,32 +61,10 @@ type BranchPickerModel struct {
 
 // NewBranchPicker creates a new branch picker TUI.
 func NewBranchPicker(branches []git.Branch) BranchPickerModel {
-	items := make([]list.Item, len(branches))
-	for i, b := range branches {
-		items[i] = BranchItem{branch: b}
-	}
-
-	delegate := list.NewDefaultDelegate()
-	delegate.ShowDescription = false
-	delegate.Styles.SelectedTitle = delegate.Styles.SelectedTitle.
-		Foreground(Purple).
-		BorderLeftForeground(Purple)
-	delegate.Styles.NormalTitle = delegate.Styles.NormalTitle.
-		Foreground(White)
-
-	l := list.New(items, delegate, 60, 15)
-	l.Title = "Select base branch"
-	l.Styles.Title = TitleStyle
-	l.SetFilteringEnabled(true)
-	l.SetShowStatusBar(true)
-	l.SetShowHelp(true)
-
-	return BranchPickerModel{list: l}
+	return BranchPickerModel{list: newBranchList(branches, 60, 15)}
 }
 
-func (m BranchPickerModel) Init() tea.Cmd {
-	return nil
-}
+func (m BranchPickerModel) Init() tea.Cmd { return nil }
 
 func (m BranchPickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
@@ -79,13 +80,12 @@ func (m BranchPickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.quitting = true
 			return m, tea.Quit
-		case "q", "esc":
+		case "q", "esc", "ctrl+c":
 			m.quitting = true
 			return m, tea.Quit
 		}
 	case tea.WindowSizeMsg:
-		m.list.SetWidth(msg.Width)
-		m.list.SetHeight(msg.Height - 2)
+		m.list.SetSize(msg.Width, msg.Height-2)
 	}
 
 	var cmd tea.Cmd
@@ -99,20 +99,19 @@ func (m BranchPickerModel) View() string {
 			SuccessStyle.Render("Base branch:"),
 			BranchStyle.Render(m.selected))
 	}
-	return "\n" + m.list.View()
+	header := HeaderBarStyle.Render(" Select base branch ")
+	return "\n" + header + "\n\n" + m.list.View()
 }
 
-func (m BranchPickerModel) Selected() string {
-	return m.selected
-}
+func (m BranchPickerModel) Selected() string { return m.selected }
 
 // PickBranch runs an interactive branch picker and returns the selected branch.
 func PickBranch() (string, error) {
+	alignColorToStderr()
 	branches, err := git.ListBranches()
 	if err != nil {
 		return "", err
 	}
-
 	if len(branches) == 0 {
 		return "", fmt.Errorf("no branches found")
 	}
@@ -128,18 +127,5 @@ func PickBranch() (string, error) {
 	if selected == "" {
 		return "", fmt.Errorf("no branch selected")
 	}
-
 	return selected, nil
-}
-
-// PickBranchWithDefault returns default branch if it exists, otherwise prompts.
-func PickBranchWithDefault() (string, error) {
-	defaultBranch := git.DefaultBranch()
-
-	fmt.Printf("  Base branch: %s (press Enter to confirm, or type to search)\n",
-		lipgloss.NewStyle().Bold(true).Foreground(Cyan).Render(defaultBranch))
-	fmt.Print("  > ")
-
-	// Use the interactive picker
-	return PickBranch()
 }

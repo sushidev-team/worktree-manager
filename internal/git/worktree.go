@@ -5,19 +5,27 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"sync"
 )
 
 // Worktree represents a git worktree.
 type Worktree struct {
-	Path       string
-	Branch     string
-	Head       string // short commit hash
-	IsBare     bool
-	IsMain     bool // true if this is the main worktree
-	IsCurrent  bool
-	IsDirty    bool
-	Name       string // derived display name
+	Path        string
+	Branch      string
+	Head        string // short commit hash
+	IsBare      bool
+	IsMain      bool // true if this is the main worktree
+	IsCurrent   bool
+	IsDirty     bool
+	Name        string // derived display name
+	DirtyCount  int    // number of changed entries (git status --porcelain lines)
+	Ahead       int    // commits ahead of upstream
+	Behind      int    // commits behind upstream
+	HasUpstream bool   // whether the branch tracks an upstream
+	LastCommit  string // relative time of last commit, e.g. "2 hours ago"
+	Subject     string // last commit subject
 }
 
 // ListWorktrees returns all worktrees for the current repository.
@@ -70,8 +78,10 @@ func ListWorktrees() ([]Worktree, error) {
 		worktrees = append(worktrees, *current)
 	}
 
-	// Mark main worktree and current, derive names
+	// Mark main worktree and current, derive names. enrich() shells out ~3
+	// times per worktree, so run those concurrently to keep startup snappy.
 	repoRoot, _ := RepoRoot()
+	var wg sync.WaitGroup
 	for i := range worktrees {
 		wt := &worktrees[i]
 		if i == 0 {
@@ -82,8 +92,13 @@ func ListWorktrees() ([]Worktree, error) {
 			wt.IsCurrent = true
 		}
 		wt.Name = deriveName(wt.Path, repoRoot)
-		wt.IsDirty = isWorktreeDirty(wt.Path)
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			enrich(wt)
+		}()
 	}
+	wg.Wait()
 
 	return worktrees, nil
 }
@@ -220,12 +235,36 @@ func deriveName(wtPath, repoRoot string) string {
 	return wtBase
 }
 
-func isWorktreeDirty(path string) bool {
-	cmd := exec.Command("git", "status", "--porcelain")
-	cmd.Dir = path
+// gitOut runs git in dir and returns trimmed stdout.
+func gitOut(dir string, args ...string) (string, error) {
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
 	out, err := cmd.Output()
-	if err != nil {
-		return false
+	return strings.TrimSpace(string(out)), err
+}
+
+// enrich fills the derived status fields for a worktree: dirty count,
+// ahead/behind vs upstream, and last-commit info. Failures are non-fatal —
+// a field just stays at its zero value.
+func enrich(wt *Worktree) {
+	if out, err := gitOut(wt.Path, "status", "--porcelain"); err == nil && out != "" {
+		wt.DirtyCount = len(strings.Split(out, "\n"))
 	}
-	return len(strings.TrimSpace(string(out))) > 0
+	wt.IsDirty = wt.DirtyCount > 0
+
+	if out, err := gitOut(wt.Path, "log", "-1", "--format=%cr%x1f%s"); err == nil {
+		if parts := strings.SplitN(out, "\x1f", 2); len(parts) == 2 {
+			wt.LastCommit = parts[0]
+			wt.Subject = parts[1]
+		}
+	}
+
+	// left-right count of upstream...HEAD: left = behind, right = ahead.
+	if out, err := gitOut(wt.Path, "rev-list", "--left-right", "--count", "@{u}...HEAD"); err == nil {
+		if f := strings.Fields(out); len(f) == 2 {
+			wt.HasUpstream = true
+			wt.Behind, _ = strconv.Atoi(f[0])
+			wt.Ahead, _ = strconv.Atoi(f[1])
+		}
+	}
 }
