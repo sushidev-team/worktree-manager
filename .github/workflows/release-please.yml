@@ -1,25 +1,20 @@
-name: Release
+name: release-please
 
 on:
   push:
     branches:
       - main
-
-permissions:
-  contents: write
-  pull-requests: write
+  workflow_dispatch:
 
 jobs:
   release-please:
-    runs-on: ubuntu-latest
-    outputs:
-      release_created: ${{ steps.release.outputs.release_created }}
-      tag_name: ${{ steps.release.outputs.tag_name }}
-    steps:
-      - uses: googleapis/release-please-action@v4
-        id: release
-        with:
-          release-type: go
+    uses: sushidev-team/workflow-release-please/.github/workflows/release-please.yml@main
+    with:
+      release-type: go
+      config-file: .release-please-config.json
+    secrets:
+      RELEASE_BOT_APP_ID: ${{ secrets.RELEASE_BOT_APP_ID }}
+      RELEASE_BOT_PRIVATE_KEY: ${{ secrets.RELEASE_BOT_PRIVATE_KEY }}
 
   goreleaser:
     needs: release-please
