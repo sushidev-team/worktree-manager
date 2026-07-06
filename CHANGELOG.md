@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.0](https://github.com/sushidev-team/worktree-manager/compare/v1.0.3...v1.1.0) (2026-07-06)
+
+
+### Features
+
+* copy gitignored files via sync-ignored command and wt add -s ([3fab61b](https://github.com/sushidev-team/worktree-manager/commit/3fab61b51db8259b6daae918f6cc15a08975ae4b))
+
 ## [1.0.3](https://github.com/sushidev-team/worktree-manager/compare/v1.0.2...v1.0.3) (2026-04-05)
 
 
