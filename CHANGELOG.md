@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.3.0](https://github.com/sushidev-team/worktree-manager/compare/v1.2.0...v1.3.0) (2026-07-08)
+
+
+### Features
+
+* branch picker, tests ([99d3324](https://github.com/sushidev-team/worktree-manager/commit/99d3324b0ace023d8636ff36d8a332ebec9f1d5d))
+
 ## [1.2.0](https://github.com/sushidev-team/worktree-manager/compare/v1.1.1...v1.2.0) (2026-07-08)
 
 
