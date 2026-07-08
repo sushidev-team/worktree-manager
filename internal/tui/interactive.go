@@ -42,6 +42,12 @@ type createdMsg struct {
 	path string
 	err  error
 }
+
+// branchFetchErrMsg reports a failed `git fetch` without leaving the branch
+// picker, so a typed worktree name and the current selection are preserved.
+type branchFetchErrMsg struct {
+	err error
+}
 type removedMsg struct {
 	name string
 	err  error
@@ -54,6 +60,20 @@ func loadWorktreesCmd() tea.Msg {
 
 func loadBranchesCmd(name string) tea.Cmd {
 	return func() tea.Msg {
+		bs, err := git.ListBranches()
+		return branchesMsg{name: name, list: bs, err: err}
+	}
+}
+
+// fetchBranchesCmd fetches from all remotes, then reloads the branch list so
+// newly-fetched remote branches appear. A fetch failure keeps the picker open
+// with its existing branches (branchFetchErrMsg); a reload failure falls back
+// to the normal branchesMsg error handling.
+func fetchBranchesCmd(name string) tea.Cmd {
+	return func() tea.Msg {
+		if err := git.Fetch(); err != nil {
+			return branchFetchErrMsg{err: err}
+		}
 		bs, err := git.ListBranches()
 		return branchesMsg{name: name, list: bs, err: err}
 	}
@@ -218,6 +238,12 @@ func (m InteractiveModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.mode = modeBranchPick
 		return m, nil
 
+	case branchFetchErrMsg:
+		// Stay in the branch picker with the branches we already have.
+		m.loading = false
+		m.err = msg.err
+		return m, nil
+
 	case createdMsg:
 		if msg.err != nil {
 			m.loading = false
@@ -373,6 +399,8 @@ func (m InteractiveModel) handleBranchPickKey(msg tea.KeyMsg) (tea.Model, tea.Cm
 			m.message = ""
 			return m, nil
 		}
+	case "f":
+		return m.startLoading("Fetching…", fetchBranchesCmd(m.pendingName))
 	case "esc":
 		m.mode = modeAdd
 		return m, m.addInput.Cursor.BlinkCmd()
@@ -470,7 +498,7 @@ func (m InteractiveModel) footerView() string {
 	case m.mode == modeAdd:
 		hints = []string{hint("enter", "next"), hint("esc", "cancel")}
 	case m.mode == modeBranchPick:
-		hints = []string{hint("enter", "select"), hint("/", "filter"), hint("esc", "back")}
+		hints = []string{hint("enter", "select"), hint("f", "fetch"), hint("/", "filter"), hint("esc", "back")}
 	case m.mode == modeSyncPrompt:
 		hints = []string{hint("y", "copy"), hint("n", "skip"), hint("esc", "back")}
 	case m.mode == modeConfirmDelete:

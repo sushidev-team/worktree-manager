@@ -51,6 +51,7 @@ var (
 	PointerStyle    = lipgloss.NewStyle().Foreground(Cyan).Bold(true)
 	DefaultTag      = lipgloss.NewStyle().Foreground(Cyan)
 	CurrentTag      = lipgloss.NewStyle().Foreground(Green)
+	RemoteTag       = lipgloss.NewStyle().Foreground(Yellow)
 	BranchStyle     = lipgloss.NewStyle().Foreground(Cyan)
 	HashStyle       = lipgloss.NewStyle().Foreground(Gray)
 	MetaStyle       = lipgloss.NewStyle().Foreground(Gray)

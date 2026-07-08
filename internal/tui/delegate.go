@@ -120,6 +120,9 @@ func (d branchDelegate) Render(w io.Writer, m list.Model, index int, item list.I
 	if b.IsCurrent {
 		tags += " " + CurrentTag.Render("current")
 	}
+	if b.IsRemote {
+		tags += " " + RemoteTag.Render("remote")
+	}
 
 	line := "  " + pointer + name + tags
 	fmt.Fprint(w, lipgloss.NewStyle().MaxWidth(width).Render(line))

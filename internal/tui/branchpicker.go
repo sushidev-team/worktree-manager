@@ -3,8 +3,10 @@ package tui
 import (
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/charmbracelet/bubbles/list"
+	"github.com/charmbracelet/bubbles/spinner"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/sushi/worktree-manager/internal/git"
 )
@@ -21,6 +23,9 @@ func (b BranchItem) Title() string {
 	}
 	if b.branch.IsCurrent {
 		name += " *"
+	}
+	if b.branch.IsRemote {
+		name += " (remote)"
 	}
 	return name
 }
@@ -52,16 +57,36 @@ func newBranchList(branches []git.Branch, width, height int) list.Model {
 	return l
 }
 
+// branchFetchMsg carries the result of an in-picker `git fetch` + reload.
+type branchFetchMsg struct {
+	list []git.Branch
+	err  error
+}
+
+func pickerFetchCmd() tea.Msg {
+	if err := git.Fetch(); err != nil {
+		return branchFetchMsg{err: err}
+	}
+	bs, err := git.ListBranches()
+	return branchFetchMsg{list: bs, err: err}
+}
+
 // BranchPickerModel is a Bubbletea model for picking a base branch.
 type BranchPickerModel struct {
 	list     list.Model
+	spinner  spinner.Model
 	selected string
 	quitting bool
+	fetching bool
+	err      error
 }
 
 // NewBranchPicker creates a new branch picker TUI.
 func NewBranchPicker(branches []git.Branch) BranchPickerModel {
-	return BranchPickerModel{list: newBranchList(branches, 60, 15)}
+	sp := spinner.New()
+	sp.Spinner = spinner.Dot
+	sp.Style = SpinnerStyle
+	return BranchPickerModel{list: newBranchList(branches, 60, 15), spinner: sp}
 }
 
 func (m BranchPickerModel) Init() tea.Cmd { return nil }
@@ -69,6 +94,14 @@ func (m BranchPickerModel) Init() tea.Cmd { return nil }
 func (m BranchPickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
+		// While fetching, only allow aborting.
+		if m.fetching {
+			if msg.String() == "ctrl+c" {
+				m.quitting = true
+				return m, tea.Quit
+			}
+			return m, nil
+		}
 		// Don't intercept keys when filtering
 		if m.list.FilterState() == list.Filtering {
 			break
@@ -80,10 +113,33 @@ func (m BranchPickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.quitting = true
 			return m, tea.Quit
+		case "f":
+			m.fetching = true
+			m.err = nil
+			return m, tea.Batch(m.spinner.Tick, pickerFetchCmd)
 		case "q", "esc", "ctrl+c":
 			m.quitting = true
 			return m, tea.Quit
 		}
+	case branchFetchMsg:
+		m.fetching = false
+		if msg.err != nil {
+			m.err = msg.err
+			return m, nil
+		}
+		items := make([]list.Item, len(msg.list))
+		for i, b := range msg.list {
+			items[i] = BranchItem{branch: b}
+		}
+		m.list.SetItems(items)
+		return m, nil
+	case spinner.TickMsg:
+		if !m.fetching {
+			return m, nil
+		}
+		var cmd tea.Cmd
+		m.spinner, cmd = m.spinner.Update(msg)
+		return m, cmd
 	case tea.WindowSizeMsg:
 		m.list.SetSize(msg.Width, msg.Height-2)
 	}
@@ -100,7 +156,20 @@ func (m BranchPickerModel) View() string {
 			BranchStyle.Render(m.selected))
 	}
 	header := HeaderBarStyle.Render(" Select base branch ")
-	return "\n" + header + "\n\n" + m.list.View()
+
+	var footer string
+	if m.fetching {
+		footer = "  " + m.spinner.View() + " " + HelpStyle.Render("Fetching…")
+	} else {
+		footer = "  " + strings.Join([]string{
+			hint("enter", "select"), hint("f", "fetch"), hint("/", "filter"), hint("esc", "cancel"),
+		}, HelpStyle.Render("  ·  "))
+	}
+	if m.err != nil {
+		footer = ErrorStyle.Render("  "+m.err.Error()) + "\n" + footer
+	}
+
+	return "\n" + header + "\n\n" + m.list.View() + "\n" + footer
 }
 
 func (m BranchPickerModel) Selected() string { return m.selected }
