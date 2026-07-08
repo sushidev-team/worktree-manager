@@ -14,9 +14,15 @@ go run . <args>           # Run without installing (e.g. go run . list)
 go install .              # Install to $GOPATH/bin
 go vet ./...              # Vet
 gofmt -l .                # List unformatted files (gofmt -w . to fix)
+go test ./...             # Run the test suite
+go test ./... -race       # Same, with the race detector
 ```
 
-There are no tests in the repo. `go build ./...` and `go vet ./...` are the only automated checks.
+### Tests
+
+The `git`, `tui`, and `cmd` packages have test suites (`*_test.go`). `internal/gittest` is a helper package (imported only from tests, so it never ships in the binary) that builds throwaway repositories: `gittest.Repo(t)` creates a repo with one commit on `main` inside a temp dir, `AddRemote` wires up a bare origin, `RemoteOnlyBranch` publishes a branch that exists only as a remote ref, and `Chdir(t, dir)` enters a repo for the test's duration (restored on cleanup).
+
+Because most `git` and `cmd` functions operate on the process working directory, tests that call `gittest.Chdir` must **not** use `t.Parallel()` — the cwd is process-global. The `tui` tests drive Bubble Tea models directly by feeding `tea.KeyMsg`/`tea.Msg` values into `Update` and asserting on mode transitions and rendered `View()` output, rather than launching a program (which needs a TTY). Genuinely untestable surfaces — `RunInteractive`/`PickBranch` (need a terminal) and `wt upgrade` (needs the network) — are left uncovered by design.
 
 ## The stdout/stderr contract (most important thing to know)
 
@@ -34,7 +40,7 @@ Three layers, each a package:
 
 - **`cmd/`** — Cobra commands, one file per subcommand (`add`, `use`, `list`, `remove`, `upgrade`, `initshell`, `syncignored`), wired in `root.go`. Commands are thin: parse args, call `internal/git`, print the path or delegate to the TUI. Bare `wt` runs the interactive TUI.
 - **`internal/git/`** — all Git interaction, done by shelling out to the `git` binary via `os/exec` (no git library). `worktree.go` parses `git worktree list --porcelain`; `branch.go` lists/sorts branches and detects the default branch; `ignored.go` lists gitignored entries (`git ls-files --others --ignored --exclude-standard --directory`) and copies them between worktrees. This is the only package that touches git state.
-- **`internal/tui/`** — Bubble Tea models. `interactive.go` is a single model with a `mode` enum (list / add / confirmDelete / branchPick) driving one Update loop; `branchpicker.go` is a standalone picker reused by `wt add` when `--base` is omitted; `styles.go` holds lipgloss color/style definitions.
+- **`internal/tui/`** — Bubble Tea models. `interactive.go` is a single model with a `mode` enum (list / branchPick / basePick / newBranch / name / syncPrompt / confirmDelete) driving one Update loop; `branchpicker.go` is a standalone picker reused by `wt add` when `--base` is omitted; `styles.go` holds lipgloss color/style definitions.
 
 ### Conventions baked into the code
 

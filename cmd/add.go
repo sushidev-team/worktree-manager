@@ -32,7 +32,11 @@ var addCmd = &cobra.Command{
 			baseBranch = selected
 		}
 
-		path, err := git.AddWorktree(name, baseBranch)
+		path, err := git.AddWorktree(git.WorktreeSpec{
+			Name:       name,
+			Branch:     name,
+			CreateFrom: baseBranch,
+		})
 		if err != nil {
 			return err
 		}

@@ -103,18 +103,35 @@ func ListWorktrees() ([]Worktree, error) {
 	return worktrees, nil
 }
 
+// WorktreeSpec describes a worktree to create.
+type WorktreeSpec struct {
+	Name   string // worktree (directory) name; the sibling suffix
+	Branch string // branch the worktree ends up on
+	// CreateFrom, when non-empty, creates Branch as a new local branch starting
+	// at this ref (a branch or a remote-tracking ref like "origin/foo", which
+	// also sets up tracking). When empty, Branch must already exist and is
+	// checked out directly.
+	CreateFrom string
+}
+
 // AddWorktree creates a new worktree as a sibling directory.
-func AddWorktree(name, baseBranch string) (string, error) {
+func AddWorktree(spec WorktreeSpec) (string, error) {
 	repoRoot, err := RepoRoot()
 	if err != nil {
 		return "", err
 	}
 
-	wtPath := SiblingPath(repoRoot, name)
+	wtPath := SiblingPath(repoRoot, spec.Name)
 
-	// Create new branch from base
-	branchName := name
-	args := []string{"worktree", "add", "-b", branchName, wtPath, baseBranch}
+	var args []string
+	if spec.CreateFrom != "" {
+		// Create a new branch from the given start-point.
+		args = []string{"worktree", "add", "-b", spec.Branch, wtPath, spec.CreateFrom}
+	} else {
+		// Check out an existing branch.
+		args = []string{"worktree", "add", wtPath, spec.Branch}
+	}
+
 	cmd := exec.Command("git", args...)
 	cmd.Dir = repoRoot
 	if out, err := cmd.CombinedOutput(); err != nil {

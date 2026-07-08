@@ -11,12 +11,20 @@ import (
 	"github.com/sushi/worktree-manager/internal/git"
 )
 
-// BranchItem implements list.Item for the branch picker.
+// createBranchLabel is the synthetic first entry that starts the new-branch flow.
+const createBranchLabel = "＋ Create new branch"
+
+// BranchItem implements list.Item for the branch picker. A BranchItem with
+// create set is the synthetic "create new branch" entry rather than a branch.
 type BranchItem struct {
 	branch git.Branch
+	create bool
 }
 
 func (b BranchItem) Title() string {
+	if b.create {
+		return createBranchLabel
+	}
 	name := b.branch.Name
 	if b.branch.IsDefault {
 		name += " (default)"
@@ -31,14 +39,29 @@ func (b BranchItem) Title() string {
 }
 
 func (b BranchItem) Description() string { return "" }
-func (b BranchItem) FilterValue() string { return b.branch.Name }
+func (b BranchItem) FilterValue() string {
+	if b.create {
+		return createBranchLabel
+	}
+	return b.branch.Name
+}
 
 // newBranchList builds a styled single-line branch list, shared by the
-// standalone picker and the inline add flow.
-func newBranchList(branches []git.Branch, width, height int) list.Model {
-	items := make([]list.Item, len(branches))
-	for i, b := range branches {
-		items[i] = BranchItem{branch: b}
+// standalone picker and the inline add flow. When includeCreate is true, a
+// synthetic "create new branch" entry is prepended.
+func newBranchList(branches []git.Branch, includeCreate bool, width, height int) list.Model {
+	var items []list.Item
+	if includeCreate {
+		items = append(items, BranchItem{create: true})
+	}
+	// Start the cursor on the default branch (rather than the create entry or
+	// the first branch), since it's the most common base/checkout target.
+	defaultIdx := -1
+	for _, b := range branches {
+		if defaultIdx < 0 && b.IsDefault {
+			defaultIdx = len(items)
+		}
+		items = append(items, BranchItem{branch: b})
 	}
 
 	if width <= 0 {
@@ -54,6 +77,9 @@ func newBranchList(branches []git.Branch, width, height int) list.Model {
 	l.SetFilteringEnabled(true)
 	l.FilterInput.PromptStyle = BranchStyle
 	l.FilterInput.Cursor.Style = BranchStyle
+	if defaultIdx >= 0 {
+		l.Select(defaultIdx)
+	}
 	return l
 }
 
@@ -86,7 +112,7 @@ func NewBranchPicker(branches []git.Branch) BranchPickerModel {
 	sp := spinner.New()
 	sp.Spinner = spinner.Dot
 	sp.Style = SpinnerStyle
-	return BranchPickerModel{list: newBranchList(branches, 60, 15), spinner: sp}
+	return BranchPickerModel{list: newBranchList(branches, false, 60, 15), spinner: sp}
 }
 
 func (m BranchPickerModel) Init() tea.Cmd { return nil }

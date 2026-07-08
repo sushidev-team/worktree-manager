@@ -16,11 +16,13 @@ import (
 type mode int
 
 const (
-	modeList mode = iota
-	modeAdd
+	modeList       mode = iota
+	modeBranchPick      // step 1: pick an existing branch or "create new branch"
+	modeBasePick        // create-new: pick the base branch to start from
+	modeNewBranch       // create-new: type the new branch name
+	modeName            // type the worktree name (defaults to the branch name)
+	modeSyncPrompt      // ask whether to copy gitignored files
 	modeConfirmDelete
-	modeBranchPick
-	modeSyncPrompt
 )
 
 // chromeHeight is the number of rows the header, footer and their spacers
@@ -34,7 +36,6 @@ type worktreesMsg struct {
 	err  error
 }
 type branchesMsg struct {
-	name string // worktree name the branch is being picked for
 	list []git.Branch
 	err  error
 }
@@ -58,30 +59,28 @@ func loadWorktreesCmd() tea.Msg {
 	return worktreesMsg{list: wts, err: err}
 }
 
-func loadBranchesCmd(name string) tea.Cmd {
-	return func() tea.Msg {
-		bs, err := git.ListBranches()
-		return branchesMsg{name: name, list: bs, err: err}
-	}
+func loadBranchesCmd() tea.Msg {
+	bs, err := git.ListBranches()
+	return branchesMsg{list: bs, err: err}
 }
 
 // fetchBranchesCmd fetches from all remotes, then reloads the branch list so
 // newly-fetched remote branches appear. A fetch failure keeps the picker open
 // with its existing branches (branchFetchErrMsg); a reload failure falls back
 // to the normal branchesMsg error handling.
-func fetchBranchesCmd(name string) tea.Cmd {
+func fetchBranchesCmd() tea.Cmd {
 	return func() tea.Msg {
 		if err := git.Fetch(); err != nil {
 			return branchFetchErrMsg{err: err}
 		}
 		bs, err := git.ListBranches()
-		return branchesMsg{name: name, list: bs, err: err}
+		return branchesMsg{list: bs, err: err}
 	}
 }
 
-func createWorktreeCmd(name, base string, syncIgnored bool) tea.Cmd {
+func createWorktreeCmd(spec git.WorktreeSpec, syncIgnored bool) tea.Cmd {
 	return func() tea.Msg {
-		path, err := git.AddWorktree(name, base)
+		path, err := git.AddWorktree(spec)
 		if err == nil && syncIgnored {
 			if src, e := git.MainWorktreePath(); e == nil {
 				_, err = git.SyncIgnoredFiles(src, path)
@@ -120,22 +119,29 @@ func (w WorktreeItem) FilterValue() string { return w.wt.Name + " " + w.wt.Branc
 
 // InteractiveModel is the main TUI model for the interactive worktree manager.
 type InteractiveModel struct {
-	list          list.Model
-	spinner       spinner.Model
-	mode          mode
-	addInput      textinput.Model
-	branchList    list.Model
-	pendingName   string // worktree name awaiting branch + sync choice
-	pendingBranch string // base branch chosen, awaiting sync confirmation
-	selected      *git.Worktree
-	message       string
-	err           error
-	loading       bool
-	loadingMsg    string
-	width         int
-	height        int
-	quitting      bool
-	switchTo      string // path to switch to after quitting
+	list        list.Model
+	spinner     spinner.Model
+	mode        mode
+	addInput    textinput.Model // worktree name
+	branchInput textinput.Model // new branch name (create-new flow)
+	branchList  list.Model
+	branches    []git.Branch // last-loaded branches, reused across pick modes
+
+	// pending state for an in-progress add, assembled across the flow.
+	creatingBranch bool   // true when in the "create new branch" path
+	pendingBranch  string // branch to check out, or the new branch name to create
+	pendingBase    string // start-point when creating a branch; "" means check out pendingBranch
+	pendingName    string // worktree directory name
+
+	selected   *git.Worktree
+	message    string
+	err        error
+	loading    bool
+	loadingMsg string
+	width      int
+	height     int
+	quitting   bool
+	switchTo   string // path to switch to after quitting
 }
 
 // NewInteractive creates the main interactive TUI model with a pre-loaded
@@ -165,11 +171,18 @@ func NewInteractive(worktrees []git.Worktree) InteractiveModel {
 	ti.Width = 40
 	ti.Prompt = ""
 
+	bi := textinput.New()
+	bi.Placeholder = "new-branch-name"
+	bi.CharLimit = 100
+	bi.Width = 40
+	bi.Prompt = ""
+
 	return InteractiveModel{
-		list:       l,
-		branchList: newBranchList(nil, 70, 20), // valid empty model; replaced on add
-		spinner:    sp,
-		addInput:   ti,
+		list:        l,
+		branchList:  newBranchList(nil, false, 70, 20), // valid empty model; replaced on add
+		spinner:     sp,
+		addInput:    ti,
+		branchInput: bi,
 	}
 }
 
@@ -234,8 +247,15 @@ func (m InteractiveModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.mode = modeList
 			return m, nil
 		}
-		m.branchList = newBranchList(msg.list, m.width, m.height-chromeHeight)
-		m.mode = modeBranchPick
+		m.branches = msg.list
+		// A reload while picking a base keeps that mode and omits the create
+		// entry; otherwise this is the first branch step, which offers it.
+		if m.mode == modeBasePick {
+			m.branchList = newBranchList(msg.list, false, m.width, m.height-chromeHeight)
+		} else {
+			m.branchList = newBranchList(msg.list, true, m.width, m.height-chromeHeight)
+			m.mode = modeBranchPick
+		}
 		return m, nil
 
 	case branchFetchErrMsg:
@@ -286,12 +306,16 @@ func (m InteractiveModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch m.mode {
 	case modeList:
 		return m.handleListKey(msg)
-	case modeAdd:
-		return m.handleAddKey(msg)
-	case modeConfirmDelete:
-		return m.handleDeleteKey(msg)
 	case modeBranchPick:
 		return m.handleBranchPickKey(msg)
+	case modeBasePick:
+		return m.handleBasePickKey(msg)
+	case modeNewBranch:
+		return m.handleNewBranchKey(msg)
+	case modeName:
+		return m.handleNameKey(msg)
+	case modeConfirmDelete:
+		return m.handleDeleteKey(msg)
 	case modeSyncPrompt:
 		return m.handleSyncPromptKey(msg)
 	}
@@ -318,12 +342,14 @@ func (m InteractiveModel) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 		}
 	case "a":
-		m.mode = modeAdd
-		m.addInput.Reset()
-		m.addInput.Focus()
+		// Start the add flow by picking a branch first.
+		m.creatingBranch = false
+		m.pendingBranch = ""
+		m.pendingBase = ""
+		m.pendingName = ""
 		m.message = ""
 		m.err = nil
-		return m, m.addInput.Cursor.BlinkCmd()
+		return m.startLoading("Loading branches…", loadBranchesCmd)
 	case "d":
 		if item, ok := m.list.SelectedItem().(WorktreeItem); ok {
 			if item.wt.IsMain {
@@ -346,23 +372,65 @@ func (m InteractiveModel) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
-func (m InteractiveModel) handleAddKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+// enterNameStep moves to the worktree-name input, defaulting (via placeholder)
+// to the chosen branch name.
+func (m InteractiveModel) enterNameStep() (tea.Model, tea.Cmd) {
+	m.mode = modeName
+	m.addInput.Reset()
+	m.addInput.Placeholder = defaultWorktreeName(m.pendingBranch)
+	m.addInput.Focus()
+	m.err = nil
+	return m, m.addInput.Cursor.BlinkCmd()
+}
+
+// handleNameKey handles the final worktree-name input. An empty name defaults
+// to the branch name.
+func (m InteractiveModel) handleNameKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "enter":
 		name := strings.TrimSpace(m.addInput.Value())
 		if name == "" {
-			m.mode = modeList
+			name = defaultWorktreeName(m.pendingBranch)
+		}
+		if name == "" {
 			return m, nil
 		}
 		m.pendingName = name
-		return m.startLoading("Loading branches…", loadBranchesCmd(name))
+		m.mode = modeSyncPrompt
+		m.message = ""
+		return m, nil
 	case "esc":
-		m.mode = modeList
+		// Back to the step that set the branch.
+		if m.creatingBranch {
+			m.mode = modeNewBranch
+			return m, m.branchInput.Cursor.BlinkCmd()
+		}
+		m.mode = modeBranchPick
 		return m, nil
 	}
 
 	var cmd tea.Cmd
 	m.addInput, cmd = m.addInput.Update(msg)
+	return m, cmd
+}
+
+// handleNewBranchKey handles the new-branch-name input in the create flow.
+func (m InteractiveModel) handleNewBranchKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "enter":
+		branch := strings.TrimSpace(m.branchInput.Value())
+		if branch == "" {
+			return m, nil // a new branch needs a name
+		}
+		m.pendingBranch = branch
+		return m.enterNameStep()
+	case "esc":
+		m.mode = modeBasePick
+		return m, nil
+	}
+
+	var cmd tea.Cmd
+	m.branchInput, cmd = m.branchInput.Update(msg)
 	return m, cmd
 }
 
@@ -393,17 +461,71 @@ func (m InteractiveModel) handleBranchPickKey(msg tea.KeyMsg) (tea.Model, tea.Cm
 
 	switch msg.String() {
 	case "enter":
-		if item, ok := m.branchList.SelectedItem().(BranchItem); ok {
-			m.pendingBranch = item.branch.Name
-			m.mode = modeSyncPrompt
+		item, ok := m.branchList.SelectedItem().(BranchItem)
+		if !ok {
+			break
+		}
+		if item.create {
+			// Enter the create-new-branch path: pick a base branch next.
+			m.creatingBranch = true
+			m.mode = modeBasePick
+			m.branchList = newBranchList(m.branches, false, m.width, m.height-chromeHeight)
 			m.message = ""
 			return m, nil
 		}
+		// Check out an existing branch. For a remote-only branch, create a
+		// local branch of the same short name tracking it.
+		m.creatingBranch = false
+		if item.branch.IsRemote {
+			short := item.branch.Name
+			if i := strings.IndexByte(short, '/'); i >= 0 {
+				short = short[i+1:]
+			}
+			m.pendingBranch = short
+			m.pendingBase = item.branch.Name
+		} else {
+			m.pendingBranch = item.branch.Name
+			m.pendingBase = ""
+		}
+		return m.enterNameStep()
 	case "f":
-		return m.startLoading("Fetching…", fetchBranchesCmd(m.pendingName))
+		return m.startLoading("Fetching…", fetchBranchesCmd())
 	case "esc":
-		m.mode = modeAdd
-		return m, m.addInput.Cursor.BlinkCmd()
+		m.mode = modeList
+		return m, nil
+	}
+
+	var cmd tea.Cmd
+	m.branchList, cmd = m.branchList.Update(msg)
+	return m, cmd
+}
+
+// handleBasePickKey handles picking the base branch for a new branch, then
+// moves to the new-branch-name input.
+func (m InteractiveModel) handleBasePickKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.branchList.FilterState() == list.Filtering {
+		var cmd tea.Cmd
+		m.branchList, cmd = m.branchList.Update(msg)
+		return m, cmd
+	}
+
+	switch msg.String() {
+	case "enter":
+		if item, ok := m.branchList.SelectedItem().(BranchItem); ok && !item.create {
+			m.pendingBase = item.branch.Name
+			m.mode = modeNewBranch
+			m.branchInput.Reset()
+			m.branchInput.Focus()
+			m.message = ""
+			return m, m.branchInput.Cursor.BlinkCmd()
+		}
+	case "f":
+		return m.startLoading("Fetching…", fetchBranchesCmd())
+	case "esc":
+		// Back to the first branch pick (with the create entry).
+		m.mode = modeBranchPick
+		m.branchList = newBranchList(m.branches, true, m.width, m.height-chromeHeight)
+		return m, nil
 	}
 
 	var cmd tea.Cmd
@@ -414,18 +536,32 @@ func (m InteractiveModel) handleBranchPickKey(msg tea.KeyMsg) (tea.Model, tea.Cm
 // handleSyncPromptKey asks whether to copy gitignored files into the new
 // worktree, then creates it either way.
 func (m InteractiveModel) handleSyncPromptKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	spec := git.WorktreeSpec{Name: m.pendingName, Branch: m.pendingBranch, CreateFrom: m.pendingBase}
 	switch msg.String() {
 	case "y", "Y":
-		return m.startLoading("Creating worktree…",
-			createWorktreeCmd(m.pendingName, m.pendingBranch, true))
+		return m.startLoading("Creating worktree…", createWorktreeCmd(spec, true))
 	case "n", "N", "enter":
-		return m.startLoading("Creating worktree…",
-			createWorktreeCmd(m.pendingName, m.pendingBranch, false))
+		return m.startLoading("Creating worktree…", createWorktreeCmd(spec, false))
 	case "esc":
-		m.mode = modeBranchPick
-		return m, nil
+		m.mode = modeName
+		return m, m.addInput.Cursor.BlinkCmd()
 	}
 	return m, nil
+}
+
+// syncPromptTitle summarizes what the worktree will be created on.
+func (m InteractiveModel) syncPromptTitle() string {
+	if m.creatingBranch {
+		return fmt.Sprintf("Create '%s' on new branch '%s'", m.pendingName, m.pendingBranch)
+	}
+	return fmt.Sprintf("Create '%s' on branch '%s'", m.pendingName, m.pendingBranch)
+}
+
+// defaultWorktreeName derives a filesystem-friendly worktree name from a branch
+// name, flattening slashes (e.g. "feature/foo" -> "feature-foo") so the sibling
+// directory stays a single path segment.
+func defaultWorktreeName(branch string) string {
+	return strings.ReplaceAll(branch, "/", "-")
 }
 
 func (m InteractiveModel) updateCurrentMode(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -433,9 +569,11 @@ func (m InteractiveModel) updateCurrentMode(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch m.mode {
 	case modeList:
 		m.list, cmd = m.list.Update(msg)
-	case modeAdd:
+	case modeName:
 		m.addInput, cmd = m.addInput.Update(msg)
-	case modeBranchPick:
+	case modeNewBranch:
+		m.branchInput, cmd = m.branchInput.Update(msg)
+	case modeBranchPick, modeBasePick:
 		m.branchList, cmd = m.branchList.Update(msg)
 	}
 	return m, cmd
@@ -470,10 +608,14 @@ func (m InteractiveModel) View() string {
 func (m InteractiveModel) headerView() string {
 	title := "Git Worktrees"
 	switch m.mode {
-	case modeAdd:
-		title = "New Worktree"
 	case modeBranchPick:
-		title = fmt.Sprintf("Base branch for '%s'", m.pendingName)
+		title = "Select branch"
+	case modeBasePick:
+		title = "Base branch for new branch"
+	case modeNewBranch:
+		title = "New branch name"
+	case modeName:
+		title = "Worktree name"
 	case modeSyncPrompt:
 		title = "New Worktree"
 	case modeConfirmDelete:
@@ -495,10 +637,14 @@ func (m InteractiveModel) footerView() string {
 		hints = []string{hint("enter", "apply"), hint("esc", "clear")}
 	case m.mode == modeList:
 		hints = []string{hint("enter", "switch"), hint("a", "add"), hint("d", "delete"), hint("/", "filter"), hint("q", "quit")}
-	case m.mode == modeAdd:
-		hints = []string{hint("enter", "next"), hint("esc", "cancel")}
 	case m.mode == modeBranchPick:
+		hints = []string{hint("enter", "select"), hint("f", "fetch"), hint("/", "filter"), hint("esc", "cancel")}
+	case m.mode == modeBasePick:
 		hints = []string{hint("enter", "select"), hint("f", "fetch"), hint("/", "filter"), hint("esc", "back")}
+	case m.mode == modeNewBranch:
+		hints = []string{hint("enter", "next"), hint("esc", "back")}
+	case m.mode == modeName:
+		hints = []string{hint("enter", "next"), hint("esc", "back")}
 	case m.mode == modeSyncPrompt:
 		hints = []string{hint("y", "copy"), hint("n", "skip"), hint("esc", "back")}
 	case m.mode == modeConfirmDelete:
@@ -513,17 +659,24 @@ func (m InteractiveModel) bodyView(h int) string {
 	}
 
 	switch m.mode {
-	case modeBranchPick:
+	case modeBranchPick, modeBasePick:
 		return place(m.width, h, m.branchList.View())
-	case modeAdd:
+	case modeNewBranch:
 		box := ModalStyle.Render(lipgloss.JoinVertical(lipgloss.Left,
-			ModalTitle.Render("Name the new worktree"),
+			ModalTitle.Render(fmt.Sprintf("New branch from '%s'", m.pendingBase)),
+			BranchStyle.Render("› ")+m.branchInput.View(),
+		))
+		return center(m.width, h, box)
+	case modeName:
+		box := ModalStyle.Render(lipgloss.JoinVertical(lipgloss.Left,
+			ModalTitle.Render("Name the worktree"),
 			BranchStyle.Render("› ")+m.addInput.View(),
+			HelpStyle.Render(fmt.Sprintf("↵ empty → %s", defaultWorktreeName(m.pendingBranch))),
 		))
 		return center(m.width, h, box)
 	case modeSyncPrompt:
 		box := ModalStyle.Render(lipgloss.JoinVertical(lipgloss.Left,
-			ModalTitle.Render(fmt.Sprintf("Create '%s' from '%s'", m.pendingName, m.pendingBranch)),
+			ModalTitle.Render(m.syncPromptTitle()),
 			"Copy gitignored files (.env, config, …)",
 			"from the main worktree?",
 		))

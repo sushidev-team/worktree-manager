@@ -100,16 +100,32 @@ func (d branchDelegate) Render(w io.Writer, m list.Model, index int, item list.I
 	if !ok {
 		return
 	}
-	b := it.branch
 	width := m.Width()
 	if width <= 0 {
 		width = 80
 	}
 
+	selected := index == m.Index()
+
 	pointer := "  "
-	name := NormalName.Render(b.Name)
-	if index == m.Index() {
+	if selected {
 		pointer = PointerStyle.Render("❯ ")
+	}
+
+	// The synthetic "create new branch" entry: a highlighted call-to-action
+	// rather than a real branch, so it renders without branch tags.
+	if it.create {
+		label := DefaultTag.Render(createBranchLabel)
+		if selected {
+			label = SelectedName.Render(createBranchLabel)
+		}
+		fmt.Fprint(w, lipgloss.NewStyle().MaxWidth(width).Render("  "+pointer+label))
+		return
+	}
+
+	b := it.branch
+	name := NormalName.Render(b.Name)
+	if selected {
 		name = SelectedName.Render(b.Name)
 	}
 
