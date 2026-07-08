@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.2.0](https://github.com/sushidev-team/worktree-manager/compare/v1.1.1...v1.2.0) (2026-07-08)
+
+
+### Features
+
+* added branch selection ([6f85464](https://github.com/sushidev-team/worktree-manager/commit/6f854646d86b33ac3f9c02cfc176d6a5b0b7a9ee))
+* redesign interactive TUI with richer worktrees and async ops ([716b4ef](https://github.com/sushidev-team/worktree-manager/commit/716b4ef824ef8f4ac8d1f13bfbf2c7faef33f9b9))
+
+
+### Bug Fixes
+
+* render TUI colors when stdout is captured by the shell wrapper ([716b4ef](https://github.com/sushidev-team/worktree-manager/commit/716b4ef824ef8f4ac8d1f13bfbf2c7faef33f9b9))
+
 ## [1.1.1](https://github.com/sushidev-team/worktree-manager/compare/v1.1.0...v1.1.1) (2026-07-06)
 
 
