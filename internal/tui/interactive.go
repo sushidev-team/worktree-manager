@@ -29,6 +29,10 @@ const (
 // consume; the list/body gets the rest.
 const chromeHeight = 4
 
+// detailHeight is the number of body rows reserved below the worktree list for
+// the selected worktree's details (a blank spacer plus the commit subject).
+const detailHeight = 2
+
 // --- async messages ---------------------------------------------------------
 
 type worktreesMsg struct {
@@ -205,7 +209,7 @@ func (m *InteractiveModel) resize() {
 	if m.width <= 0 || h <= 0 {
 		return
 	}
-	m.list.SetSize(m.width, h)
+	m.list.SetSize(m.width, max(h-detailHeight, 1))
 	m.branchList.SetSize(m.width, h)
 }
 
@@ -690,8 +694,24 @@ func (m InteractiveModel) bodyView(h int) string {
 		box := ModalStyle.BorderForeground(Red).Render(lipgloss.JoinVertical(lipgloss.Left, lines...))
 		return center(m.width, h, box)
 	default:
-		return place(m.width, h, m.list.View())
+		listH := max(h-detailHeight, 1)
+		return place(m.width, h, place(m.width, listH, m.list.View())+"\n\n"+m.detailView())
 	}
+}
+
+// detailView renders the selected worktree's last commit (hash + subject) in a
+// fixed slot below the list, so the rows above never shift as the cursor moves.
+func (m InteractiveModel) detailView() string {
+	item, ok := m.list.SelectedItem().(WorktreeItem)
+	if !ok || item.wt.Subject == "" {
+		return ""
+	}
+	wt := item.wt
+	prefix := "    "
+	if wt.Head != "" {
+		prefix += HashStyle.Render(wt.Head) + "  "
+	}
+	return prefix + SubjectStyle.Render(truncate(wt.Subject, m.width-lipgloss.Width(prefix)))
 }
 
 // SwitchTo returns the path to switch to, or empty string.

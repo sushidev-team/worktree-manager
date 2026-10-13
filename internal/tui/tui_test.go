@@ -625,6 +625,39 @@ func TestFullWorktreeRowRenders(t *testing.T) {
 	}
 }
 
+// Moving the cursor must not reflow the list: every row keeps its screen line,
+// and the selected subject shows in the fixed detail slot instead.
+func TestCursorMoveKeepsRowsInPlace(t *testing.T) {
+	wts := []git.Worktree{
+		{Name: "alpha", Path: "/repo", IsMain: true, Head: "aaa1111", Subject: "first subject"},
+		{Name: "beta", Path: "/repo--beta", Head: "bbb2222", Subject: "second subject"},
+		{Name: "gamma", Path: "/repo--gamma", Head: "ccc3333", Subject: "third subject"},
+	}
+	lineOf := func(view, s string) int {
+		for i, l := range strings.Split(view, "\n") {
+			if strings.Contains(l, s) {
+				return i
+			}
+		}
+		return -1
+	}
+	m := listModelWith(t, wts)
+	before := m.View()
+	m = press(t, m, tea.KeyDown)
+	after := m.View()
+	for _, name := range []string{"alpha", "beta", "gamma"} {
+		if lineOf(before, name) != lineOf(after, name) {
+			t.Errorf("row %q moved from line %d to %d", name, lineOf(before, name), lineOf(after, name))
+		}
+	}
+	if !strings.Contains(before, "first subject") || strings.Contains(before, "second subject") {
+		t.Errorf("detail should show only the selected subject:\n%s", before)
+	}
+	if !strings.Contains(after, "second subject") || lineOf(before, "first subject") != lineOf(after, "second subject") {
+		t.Errorf("detail slot should follow the cursor at a fixed line:\n%s", after)
+	}
+}
+
 func TestBranchPickerView(t *testing.T) {
 	m := NewBranchPicker([]git.Branch{{Name: "main", IsDefault: true}})
 	nm, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})

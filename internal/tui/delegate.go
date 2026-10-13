@@ -12,8 +12,9 @@ import (
 
 // worktreeDelegate renders each worktree as two lines: a name line with a
 // selection bar and a colored current-marker, and a meta line packing branch,
-// hash, ahead/behind, dirty count and last-commit age. The selected row also
-// shows the last commit subject.
+// hash, ahead/behind, dirty count and last-commit age. Rows have a fixed height
+// so moving the cursor never reflows the list; the selected worktree's commit
+// subject lives in the detail line below the list (see detailView).
 type worktreeDelegate struct{}
 
 func (d worktreeDelegate) Height() int  { return 2 }
@@ -76,11 +77,7 @@ func (d worktreeDelegate) Render(w io.Writer, m list.Model, index int, item list
 	if wt.LastCommit != "" {
 		segs = append(segs, MetaStyle.Render(wt.LastCommit))
 	}
-	meta := strings.Join(segs, MetaStyle.Render(" · "))
-	if selected && wt.Subject != "" {
-		meta += "\n    " + SubjectStyle.Render(truncate(wt.Subject, width-4))
-	}
-	line2 := "    " + meta
+	line2 := "    " + strings.Join(segs, MetaStyle.Render(" · "))
 
 	out := lipgloss.NewStyle().MaxWidth(width).Render(line1 + "\n" + line2)
 	fmt.Fprint(w, out)
