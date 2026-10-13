@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.3.1](https://github.com/sushidev-team/worktree-manager/compare/v1.3.0...v1.3.1) (2026-10-13)
+
+
+### Bug Fixes
+
+* **tui:** show commit subject in fixed detail line so rows don't shift ([0f49041](https://github.com/sushidev-team/worktree-manager/commit/0f490417184b25775303be7dda1fa063831b4f91))
+
 ## [1.3.0](https://github.com/sushidev-team/worktree-manager/compare/v1.2.0...v1.3.0) (2026-07-08)
 
 
